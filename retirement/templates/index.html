@@ -1,0 +1,17 @@
+{% extends "base_generic.html" %}
+
+{% block content %}
+<h1>Financial Planner 2.0</h1>
+
+  <p>Welcome to <em>Financial Planner 2.0</em>, a very basic Financial Planner for Retirement</p>
+
+<h2>Dynamic content</h2>
+
+  <p>The service currently has following records:</p>
+  <ul>
+    <li><strong>num_analysis:</strong> {{ num_analysis }}</li>
+    <li><strong>num_assets:</strong> {{ num_assets }}</li>
+    <li><strong>num_asset_active:</strong> {{ num_asset_active }}</li>
+  </ul>
+
+{% endblock %}
