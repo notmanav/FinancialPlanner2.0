@@ -21,6 +21,9 @@ class Analysis(models.Model):
         Returns the url to access a particular instance of the model.
         """
         return reverse('analysis-detail', args=[str(self.id)])
+    
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
 
 class AssetInstance(models.Model):
     id=models.AutoField(primary_key=True, help_text="Asset Instance Id")
@@ -90,10 +93,17 @@ class Asset(models.Model):
     
     
     def save(self, *args, **kwargs):
-        self.create_asset_instance()
+        self.delete_old_asset_instances()
+        self.create_asset_instances()
         super().save(*args, **kwargs)
     
-    def create_asset_instance(self):
+    
+    def delete_old_asset_instances(self):
+        related_asset_instances=AssetInstance.objects.filter(asset__id=self.id)
+        for asset_instance in related_asset_instances:
+            asset_instance.delete()
+    
+    def create_asset_instances(self):
         i=0
         while(i<self.recurrence):
             asset_instance=AssetInstance()
