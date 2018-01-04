@@ -2,13 +2,16 @@ from django.db import models
 import uuid
 from django.urls.base import reverse
 from datetime import timedelta
+from django.db.models import signals
+from django.dispatch.dispatcher import receiver
 
 class Analysis(models.Model):
     id=models.UUIDField(primary_key=True, default=uuid.uuid4, help_text="Analysis Id")
     title=models.CharField(max_length=100, null=False, help_text =" Short Title For Analysis")
-    asset=models.ManyToManyField('Asset',help_text="Add the asset to an Analysis. Remember, results are per analysis")
+    assets=models.ManyToManyField('Asset',help_text="Add the asset to an Analysis. Remember, results are per analysis")
     create_date=models.DateField(null=False, auto_now_add=True)
     update_date=models.DateField(null=False, auto_now=True)
+    
     
     class Meta:
         verbose_name_plural="Analyses"
@@ -24,6 +27,46 @@ class Analysis(models.Model):
     
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
+
+
+asset_balances=dict()        
+    
+@receiver(signals.post_save, sender=Analysis)
+def create_transactions(sender, instance,**kwargs):
+    print(Asset.objects.filter(analysis__id=instance.id))
+    for related_asset in Asset.objects.filter(analysis__id=instance.id):
+        instance.title=instance.title + "asset: "+related_asset.name
+        print(related_asset.name)
+        for asset_instance in AssetInstance.objects.filter(asset__id=related_asset.id):
+            tx=Transaction()
+            tx.analysis=instance
+            tx.txDate=asset_instance.txDate
+            tx.oldVal=asset_balances.get(related_asset.id)
+            if(tx.oldVal==None):
+                asset_balances[related_asset.id]=0
+            tx.oldVal=asset_balances[related_asset.id]
+            tx.newVal=asset_balances[related_asset.id]+asset_instance.txAmountMin
+            tx.description="A "+related_asset.txtype +" of "+ str(asset_instance.txAmountMin) +" for "+related_asset.name + " on "+str(tx.txDate)
+            tx.save()
+    
+
+class Transaction(models.Model):
+    id=models.AutoField(primary_key=True, help_text="Transaction Id")
+    txDate=models.DateField(null=False)
+    description=models.CharField(max_length=500)
+    oldVal=models.FloatField(null=False)
+    newVal=models.FloatField(null=False) 
+    analysis=models.ForeignKey('Analysis',on_delete=models.CASCADE, help_text="All transactions in the analysis")
+    create_date=models.DateField(null=False, auto_now_add=True)
+    update_date=models.DateField(null=False, auto_now=True)
+
+    class Meta:
+        verbose_name_plural="Transactions"
+        
+    def __str__(self):
+        return self.description
+    
+    
 
 class AssetInstance(models.Model):
     id=models.AutoField(primary_key=True, help_text="Asset Instance Id")
@@ -106,12 +149,17 @@ class Asset(models.Model):
     def create_asset_instances(self):
         i=0
         while(i<self.recurrence):
-            asset_instance=AssetInstance()
-            asset_instance.txAmountMin=self.amount*((1+self.conservative_growth_rate/100)**(i*(365/self.frequency)))
-            asset_instance.txAmountMax=self.amount*((1+self.liberal_growth_rate/100)**(i*(365/self.frequency)))
-            asset_instance.txDate=self.acquire_date+timedelta(i*self.frequency)#change to add at exact frequency later
-            asset_instance.asset=self
-            asset_instance.save()
+            try:
+                asset_instance=AssetInstance()
+                asset_instance.txAmountMin=self.amount*((1+self.conservative_growth_rate/100)**(i*(365/self.frequency)))
+                asset_instance.txAmountMax=self.amount*((1+self.liberal_growth_rate/100)**(i*(365/self.frequency)))
+                asset_instance.txDate=self.acquire_date+timedelta(i*self.frequency)#change to add at exact frequency later
+                asset_instance.asset=self
+                asset_instance.save()
+            except:
+                #do nothing. just eat it up
+                #print("Unexpected error:")
+                pass
             i+=1
         
 
