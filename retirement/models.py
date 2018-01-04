@@ -27,27 +27,6 @@ class Analysis(models.Model):
     
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
-
-
-asset_balances=dict()        
-    
-@receiver(signals.post_save, sender=Analysis)
-def create_transactions(sender, instance,**kwargs):
-    print(Asset.objects.filter(analysis__id=instance.id))
-    for related_asset in Asset.objects.filter(analysis__id=instance.id):
-        instance.title=instance.title + "asset: "+related_asset.name
-        print(related_asset.name)
-        for asset_instance in AssetInstance.objects.filter(asset__id=related_asset.id):
-            tx=Transaction()
-            tx.analysis=instance
-            tx.txDate=asset_instance.txDate
-            tx.oldVal=asset_balances.get(related_asset.id)
-            if(tx.oldVal==None):
-                asset_balances[related_asset.id]=0
-            tx.oldVal=asset_balances[related_asset.id]
-            tx.newVal=asset_balances[related_asset.id]+asset_instance.txAmountMin
-            tx.description="A "+related_asset.txtype +" of "+ str(asset_instance.txAmountMin) +" for "+related_asset.name + " on "+str(tx.txDate)
-            tx.save()
     
 
 class Transaction(models.Model):

@@ -1,1 +1,1 @@
-default_app_config = 'retirement.RetirementConfig'
+default_app_config = 'retirement.RetirementConfig' 

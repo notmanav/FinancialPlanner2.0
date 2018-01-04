@@ -6,4 +6,5 @@ class RetirementConfig(AppConfig):
     
     def ready(self):
         import retirement.signals
+        
 
