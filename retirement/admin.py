@@ -1,9 +1,8 @@
 from django.contrib import admin
-from .models import Analysis,Asset
-from retirement.models import AssetInstance, Transaction
+from retirement.models import Analysis,Asset,AssetInstance, Transaction, Result
 
 admin.site.register(Asset)
 admin.site.register(AssetInstance)
 admin.site.register(Analysis)
 admin.site.register(Transaction)
-##admin.site.register(Result)
+admin.site.register(Result)

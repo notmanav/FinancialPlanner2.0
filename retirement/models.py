@@ -1,9 +1,40 @@
-from django.db import models
 import uuid
+from django.db import models
 from django.urls.base import reverse
-from datetime import timedelta
-from django.db.models import signals
-from django.dispatch.dispatcher import receiver
+from retirement.utils import DateUtil
+
+class Result(models.Model):
+    id=models.UUIDField(primary_key=True, default=uuid.uuid4, help_text="Result Id(Servers no purpose other then letting the Analysis transaction complete before doing the calculations")
+    analysis=models.OneToOneField('Analysis',on_delete=models.CASCADE)
+    
+    def save(self, *args, **kwargs):
+        self.delete_old_transactions()
+        super().save(*args, **kwargs)
+        self.create_transactions()
+        
+    def __str__(self):
+        return (self.analysis.title + "-Results")
+    
+    def create_transactions(self):
+        asset_balances=dict()
+        #print(Asset.objects.filter(analysis__id=self.analysis.id))
+        for related_asset in Asset.objects.filter(analysis__id=self.analysis.id):
+            for asset_instance in AssetInstance.objects.filter(asset__id=related_asset.id):
+                tx=Transaction()
+                tx.analysis=self.analysis
+                tx.txDate=asset_instance.txDate
+                tx.oldVal=asset_balances.get(related_asset.id)
+                if(tx.oldVal==None):
+                    asset_balances[related_asset.id]=0
+                tx.oldVal=asset_balances[related_asset.id]
+                tx.newVal=asset_balances[related_asset.id]+asset_instance.txAmountMin
+                tx.description="A "+related_asset.txtype +" of "+ str(asset_instance.txAmountMin) +" for "+related_asset.name + " on "+str(tx.txDate)
+                tx.save()
+    
+    def delete_old_transactions(self):
+        transactions=Transaction.objects.filter(analysis__id=self.analysis.id)
+        for transaction in transactions:
+            transaction.delete()
 
 class Analysis(models.Model):
     id=models.UUIDField(primary_key=True, default=uuid.uuid4, help_text="Analysis Id")
@@ -58,15 +89,16 @@ class AssetInstance(models.Model):
     
     class Meta:
         verbose_name_plural="Asset Instances"
+        ordering = ['txDate']
     
     def __str__(self):
-        return self.asset.name
+        return self.asset.name + " ("+ str(self.txDate) +") - "+str(self.asset.currency)+" "+str(self.txAmountMin) +"/"+str(self.txAmountMax)
     
     def get_absolute_url(self):
         """
         Returns the url to access a particular instance of the model.
         """
-        return reverse('asset-inst-detail', args=[str(self.id)])    
+        return reverse('asset-inst-detail', args=[str(self.id)])
 
 class Asset(models.Model):
     
@@ -81,11 +113,15 @@ class Asset(models.Model):
         ('DEBIT','DEBIT')
     )
     
+    DAILY_FREQ=1
+    WEEKLY_FREQ=7
+    MONTHLY_FREQ=30
+    ANNUAL_FREQ=365
     Frequency = (
-        (1,'DAILY'),
-        (7,'WEEKLY'),
-        (30,'MONTHLY'),
-        (365,'ANNUAL')
+        (DAILY_FREQ,'DAILY'),
+        (WEEKLY_FREQ,'WEEKLY'),
+        (MONTHLY_FREQ,'MONTHLY'),
+        (ANNUAL_FREQ,'ANNUAL')
     )
     
     Liquidity=(
@@ -105,13 +141,24 @@ class Asset(models.Model):
     txtype=models.CharField(max_length=10, null=False, choices=TxType, default='DEBIT')
     acquire_date=models.DateField()
     liquidity=models.IntegerField(null=False,choices=Liquidity, default=50)
-    recurrence =models.IntegerField (null=False, default=1)
-    frequency=models.IntegerField(null=False, choices=Frequency, default=365)
-    conservative_growth_rate=models.FloatField(null=False, default=2.0)
-    liberal_growth_rate=models.FloatField(null=False, default=6.0)
+    
+    asset_recurrence = models.IntegerField (null=False, default=1)
+    asset_recurrence_frequency=models.IntegerField(null=False, choices=Frequency, default=ANNUAL_FREQ)
+    asset_recurrence_conservative_growth_rate=models.FloatField(null=False, default=2.0)
+    asset_recurrence_liberal_growth_rate=models.FloatField(null=False, default=6.0)
+    
+    interest_recurrence_frequency=models.IntegerField(null=False, choices=Frequency, default=ANNUAL_FREQ)
+    interest_recurrence_conservative_growth_rate=models.FloatField(null=False, default=2.0)
+    interest_recurrence_liberal_growth_rate=models.FloatField(null=False, default=6.0)
+    
     active=models.BooleanField(null=False, default=True)
     create_date=models.DateField(null=False, auto_now_add=True)
     update_date=models.DateField(null=False, auto_now=True)
+    
+    next_interest_day=None
+    dateutil=DateUtil()
+    conservative_balance=0.0
+    liberal_balance=0.0
     
     
     def save(self, *args, **kwargs):
@@ -127,21 +174,60 @@ class Asset(models.Model):
     
     def create_asset_instances(self):
         i=0
-        while(i<self.recurrence):
+        while(i<self.asset_recurrence):
             try:
                 asset_instance=AssetInstance()
-                asset_instance.txAmountMin=self.amount*((1+self.conservative_growth_rate/100)**(i*(365/self.frequency)))
-                asset_instance.txAmountMax=self.amount*((1+self.liberal_growth_rate/100)**(i*(365/self.frequency)))
-                asset_instance.txDate=self.acquire_date+timedelta(i*self.frequency)#change to add at exact frequency later
+                asset_instance.txAmountMin=self.amount*((1+self.asset_recurrence_conservative_growth_rate/100)**i)
+                asset_instance.txAmountMax=self.amount*((1+self.asset_recurrence_liberal_growth_rate/100)**i)
+                asset_instance.txDate=self.get_next_asset_instance_date(i)
                 asset_instance.asset=self
                 asset_instance.save()
-            except:
+            except Exception as ex:
                 #do nothing. just eat it up
-                #print("Unexpected error:")
-                pass
+                print(ex)
+                #pass
             i+=1
-        
 
+    def prep_for_txn(self):
+        self.dateutil=DateUtil()
+        self.conservative_balance=0.0
+        self.liberal_balance=0.0
+        self.next_interest_day=self.get_next_interest_date(self.acquire_date)
+    
+    
+    def get_next_asset_instance_date(self,recurrence_number):
+        if(self.asset_recurrence_frequency==Asset.DAILY_FREQ):
+            return self.dateutil.add_days(self.acquire_date, recurrence_number)
+        elif(self.asset_recurrence_frequency==Asset.WEEKLY_FREQ):
+            return self.dateutil.add_days(self.acquire_date, 1*7*recurrence_number)
+        elif(self.asset_recurrence_frequency==Asset.MONTHLY_FREQ):
+            return self.dateutil.add_months(self.acquire_date.day,self.acquire_date, recurrence_number)
+        elif(self.asset_recurrence_frequency==Asset.ANNUAL_FREQ):
+            return self.dateutil.add_years(self.acquire_date.day,self.acquire_date, recurrence_number)
+        return self.dateutil.add_years(self.acquire_date.day,self.acquire_date, recurrence_number) #assume annual as the de-facto
+
+
+
+        
+    def get_next_interest_date(self,current_interest_date):
+        if(self.interest_recurrence_frequency==Asset.DAILY_FREQ):
+            return self.dateutil.add_days(current_interest_date, 1)
+        elif(self.interest_recurrence_frequency==Asset.WEEKLY_FREQ):
+            return self.dateutil.add_days(current_interest_date, 1*7)
+        elif(self.interest_recurrence_frequency==Asset.MONTHLY_FREQ):
+            return self.dateutil.add_months(self.acquire_date.day,current_interest_date),1
+        elif(self.interest_recurrence_frequency==Asset.ANNUAL_FREQ):
+            return self.dateutil.add_years(self.acquire_date.day,current_interest_date,1)
+        return self.dateutil.add_years(self.acquire_date.day,current_interest_date,1) #assume annual as the de-facto
+    
+    def is_interest_day(self,thedate):
+        if(thedate==self.next_interest_day):
+            self.set_next_interest_day()
+            return True
+        return False
+    
+    def set_next_interest_day(self):
+        self.next_interest_day=self.get_next_interest_date(self.next_interest_day)
     
     def __str__(self):
         return self.name
