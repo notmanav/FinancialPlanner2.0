@@ -16,20 +16,34 @@ class Result(models.Model):
         return (self.analysis.title + "-Results")
     
     def create_transactions(self):
-        asset_balances=dict()
+        dateutility=DateUtil()
         #print(Asset.objects.filter(analysis__id=self.analysis.id))
-        for related_asset in Asset.objects.filter(analysis__id=self.analysis.id):
-            for asset_instance in AssetInstance.objects.filter(asset__id=related_asset.id):
-                tx=Transaction()
-                tx.analysis=self.analysis
-                tx.txDate=asset_instance.txDate
-                tx.oldVal=asset_balances.get(related_asset.id)
-                if(tx.oldVal==None):
-                    asset_balances[related_asset.id]=0
-                tx.oldVal=asset_balances[related_asset.id]
-                tx.newVal=asset_balances[related_asset.id]+asset_instance.txAmountMin
-                tx.description="A "+related_asset.txtype +" of "+ str(asset_instance.txAmountMin) +" for "+related_asset.name + " on "+str(tx.txDate)
-                tx.save()
+        related_assets=Asset.objects.filter(analysis__id=self.analysis.id)
+        current_tx_date=self.analysis.start_date
+        while(current_tx_date<=self.analysis.end_date):
+            for related_asset in related_assets:
+                related_asset.prep_for_txn()
+                if(related_asset.is_interest_day(current_tx_date)):
+                    new_conservative_amount=related_asset.get_next_conservative_interest_amount()
+                    tx=Transaction()
+                    tx.analysis=self.analysis
+                    tx.txDate=current_tx_date
+                    tx.oldVal=related_asset.conservative_balance
+                    tx.newVal=new_conservative_amount
+                    related_asset.conservative_balance=new_conservative_amount
+                    tx.description="An interest "+related_asset.txtype +" of "+ str(tx.newVal-tx.oldVal) +" for "+related_asset.name + " on "+str(tx.txDate)+" for a total new balance of "+str(tx.newVal)
+                    tx.save()
+                for asset_instance in AssetInstance.objects.filter(asset__id=related_asset.id):
+                    if(asset_instance.txDate==current_tx_date):
+                        tx=Transaction()
+                        tx.analysis=self.analysis
+                        tx.txDate=asset_instance.txDate
+                        tx.oldVal=related_asset.conservative_balance
+                        tx.newVal=tx.oldVal+asset_instance.txAmountMin
+                        related_asset.conservative_balance=tx.newVal
+                        tx.description="A "+related_asset.txtype +" of "+ str(asset_instance.txAmountMin) +" for "+related_asset.name + " on "+str(tx.txDate) +" for a total new balance of "+str(tx.newVal)
+                        tx.save()
+            current_tx_date=dateutility.add_days(current_tx_date, 1)
     
     def delete_old_transactions(self):
         transactions=Transaction.objects.filter(analysis__id=self.analysis.id)
@@ -40,6 +54,8 @@ class Analysis(models.Model):
     id=models.UUIDField(primary_key=True, default=uuid.uuid4, help_text="Analysis Id")
     title=models.CharField(max_length=100, null=False, help_text =" Short Title For Analysis")
     assets=models.ManyToManyField('Asset',help_text="Add the asset to an Analysis. Remember, results are per analysis")
+    start_date=models.DateField(help_text="Analysis starts from this date. All previous assets transactions will be ignored")
+    end_date=models.DateField(help_text="Analysis ends on this date. All future asset transactions will be ignored")
     create_date=models.DateField(null=False, auto_now_add=True)
     update_date=models.DateField(null=False, auto_now=True)
     
@@ -74,7 +90,7 @@ class Transaction(models.Model):
         verbose_name_plural="Transactions"
         
     def __str__(self):
-        return self.description
+        return self.description +" || "+str(self.oldVal)+ " || "+str(self.newVal)
     
     
 
@@ -190,8 +206,8 @@ class Asset(models.Model):
 
     def prep_for_txn(self):
         self.dateutil=DateUtil()
-        self.conservative_balance=0.0
-        self.liberal_balance=0.0
+        # self.conservative_balance=0.0
+        # self.liberal_balance=0.0
         self.next_interest_day=self.get_next_interest_date(self.acquire_date)
     
     
@@ -207,8 +223,13 @@ class Asset(models.Model):
         return self.dateutil.add_years(self.acquire_date.day,self.acquire_date, recurrence_number) #assume annual as the de-facto
 
 
-
-        
+    def get_next_conservative_interest_amount(self):
+        return self.conservative_balance*(1+(self.interest_recurrence_conservative_growth_rate/100))
+    
+    def get_next_liberal_interest_amount(self):
+        return self.liberal_balance*(1+(self.interest_recurrence_liberal_growth_rate/100))
+    
+    #Does not change the interest dates. Just returns the next interest date assuming the current_interest_date is valid    
     def get_next_interest_date(self,current_interest_date):
         if(self.interest_recurrence_frequency==Asset.DAILY_FREQ):
             return self.dateutil.add_days(current_interest_date, 1)
@@ -220,12 +241,13 @@ class Asset(models.Model):
             return self.dateutil.add_years(self.acquire_date.day,current_interest_date,1)
         return self.dateutil.add_years(self.acquire_date.day,current_interest_date,1) #assume annual as the de-facto
     
+    #Stateless. Does not set the next interest date by default. Call set_next_interest_day to change tp the next interest day
     def is_interest_day(self,thedate):
         if(thedate==self.next_interest_day):
-            self.set_next_interest_day()
             return True
         return False
     
+    #Stateful. Every call increments the date to next occurrence
     def set_next_interest_day(self):
         self.next_interest_day=self.get_next_interest_date(self.next_interest_day)
     
