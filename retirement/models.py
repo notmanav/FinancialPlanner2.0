@@ -87,7 +87,7 @@ class Result(models.Model):
                         tx.causing_asset_id=related_asset.id
                         tx.impacted_asset_id=related_asset.id
                         related_asset.conservative_balance=new_liberal_amount
-                        tx.description="An interest "+related_asset.txtype +" of "+ str(round(tx.newVal-tx.oldVal,2)) +" for "+related_asset.name + " on "+str(tx.txDate)+" for a total new balance of "+str(round(tx.newVal,2))
+                        tx.description="An interest(liberal) "+related_asset.txtype +" of "+ str(round(tx.newVal-tx.oldVal,2)) +" for "+related_asset.name + " on "+str(tx.txDate)+" for a total new balance of "+str(round(tx.newVal,2))
                         tx.save()
                         related_asset.save()
                 for asset_instance in asset_instances_of_id.get(related_asset.id):
